@@ -23,7 +23,9 @@ interface SupabaseApiService {
     @GET("rest/v1/customers")
     suspend fun getCustomers(
         @Query("select") select: String = "*",
-        @Query("order") order: String = "name.asc"
+        @Query("order") order: String = "name.asc",
+        @Query("limit") limit: Int? = null,
+        @Query("offset") offset: Int? = null
     ): List<SupabaseCustomerDto>
 
     @Headers("Prefer: return=representation")
@@ -48,7 +50,9 @@ interface SupabaseApiService {
     @GET("rest/v1/products")
     suspend fun getProducts(
         @Query("select") select: String = "*",
-        @Query("order") order: String = "created_at.desc"
+        @Query("order") order: String = "created_at.desc",
+        @Query("limit") limit: Int? = null,
+        @Query("offset") offset: Int? = null
     ): List<SupabaseProductDto>
 
     @Headers("Prefer: return=representation")
@@ -73,7 +77,9 @@ interface SupabaseApiService {
     @GET("rest/v1/customer_ledger_entries")
     suspend fun getCustomerLedgerEntries(
         @Query("select") select: String = "*",
-        @Query("order") order: String = "entry_date.asc"
+        @Query("order") order: String = "entry_date.asc",
+        @Query("limit") limit: Int? = null,
+        @Query("offset") offset: Int? = null
     ): List<SupabaseCustomerLedgerEntryDto>
 
     @Headers("Prefer: return=representation")
@@ -152,9 +158,41 @@ interface SupabaseApiService {
     @Headers("Prefer: return=representation")
     @POST("rest/v1/purchase_invoices")
     suspend fun insertPurchaseInvoice(@Body invoice: SupabasePurchaseInvoiceDto): List<SupabasePurchaseInvoiceDto>
+
+    // --- Suppliers ---
+    @GET("rest/v1/suppliers")
+    suspend fun getSuppliers(
+        @Query("select") select: String = "*",
+        @Query("order") order: String = "name.asc"
+    ): List<SupabaseSupplierDto>
+
+    // --- Warehouses & stock (لحساب رصيد المحل والمخزن لكل صنف) ---
+    @GET("rest/v1/warehouses")
+    suspend fun getWarehouses(
+        @Query("select") select: String = "id,location_type"
+    ): List<SupabaseWarehouseDto>
+
+    @GET("rest/v1/stock_balances")
+    suspend fun getStockBalances(
+        @Query("select") select: String = "product_id,warehouse_id,qty_in_base_unit",
+        @Query("limit") limit: Int? = null,
+        @Query("offset") offset: Int? = null
+    ): List<SupabaseStockBalanceDto>
+
+    // --- Purchase invoices (قراءة بالمورد والأصناف) ---
+    @GET("rest/v1/purchase_invoices")
+    suspend fun getPurchaseInvoicesWithItems(
+        @Query("select") select: String = "*,suppliers(name),purchase_invoice_items(*)",
+        @Query("order") order: String = "invoice_date.desc",
+        @Query("limit") limit: Int = 200
+    ): List<SupabasePurchaseInvoiceReadDto>
 }
 
 object SupabaseClientProvider {
+
+    /** بيتحط من الـ Repository عشان الـ interceptor يستخدم توكن المستخدم المسجل. */
+    @Volatile
+    var sessionManager: SupabaseSessionManager? = null
 
     private var currentUrl: String = ""
     private var currentKey: String = ""
@@ -181,10 +219,13 @@ object SupabaseClientProvider {
         currentKey = cleanKey
 
         val authInterceptor = Interceptor { chain ->
+            val session = sessionManager
+            session?.refreshIfNeededBlocking(cleanUrl, cleanKey)
+            val bearer = session?.accessToken() ?: cleanKey
             val original = chain.request()
             val requestBuilder = original.newBuilder()
                 .header("apikey", cleanKey)
-                .header("Authorization", "Bearer $cleanKey")
+                .header("Authorization", "Bearer $bearer")
                 .header("Content-Type", "application/json")
                 .header("Accept", "application/json")
             chain.proceed(requestBuilder.build())

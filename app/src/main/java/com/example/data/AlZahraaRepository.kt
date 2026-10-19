@@ -17,12 +17,14 @@ import com.example.network.supabase.SupabaseCashAccountDto
 import com.example.network.supabase.SupabaseClientProvider
 import com.example.network.supabase.SupabaseConfigManager
 import com.example.network.supabase.SupabaseConnectionState
+import com.example.network.supabase.SupabaseSessionManager
 import com.example.network.supabase.SupabaseCustomerDto
 import com.example.network.supabase.SupabaseCustomerLedgerEntryDto
 import com.example.network.supabase.SupabaseExpenseDto
 import com.example.network.supabase.SupabaseOldLedgerDto
 import com.example.network.supabase.SupabaseProductDto
 import com.example.network.supabase.SupabaseStatusInfo
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -35,6 +37,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.UUID
+import retrofit2.HttpException
 
 class AlZahraaRepository(
     private val context: Context? = null
@@ -42,62 +45,46 @@ class AlZahraaRepository(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val configManager: SupabaseConfigManager? = context?.let { SupabaseConfigManager.getInstance(it) }
 
-    private val _customers = MutableStateFlow<List<Customer>>(AlZahraaSeedData.generateInitialCustomers())
+    private val sessionManager: SupabaseSessionManager? =
+        context?.let { SupabaseSessionManager.getInstance(it) }
+
+    /** هل المستخدم مسجل دخول على Supabase؟ (من غيره القاعدة بترجع بيانات فاضية بسبب RLS) */
+    val isSignedIn: StateFlow<Boolean> =
+        sessionManager?.signedIn ?: MutableStateFlow(false).asStateFlow()
+
+    // كل البيانات بتيجي من قاعدة البيانات. بنبدأ فاضيين لحد ما أول مزامنة تخلص.
+    private val _customers = MutableStateFlow<List<Customer>>(emptyList())
     val customers: StateFlow<List<Customer>> = _customers.asStateFlow()
 
-    private val _products = MutableStateFlow<List<Product>>(AlZahraaSeedData.INITIAL_PRODUCTS)
+    private val _products = MutableStateFlow<List<Product>>(emptyList())
     val products: StateFlow<List<Product>> = _products.asStateFlow()
 
-    private val _suppliers = MutableStateFlow<List<Supplier>>(AlZahraaSeedData.INITIAL_SUPPLIERS)
+    private val _suppliers = MutableStateFlow<List<Supplier>>(emptyList())
     val suppliers: StateFlow<List<Supplier>> = _suppliers.asStateFlow()
 
-    private val _cashAccounts = MutableStateFlow<List<CashAccount>>(AlZahraaSeedData.INITIAL_CASH_ACCOUNTS)
+    private val _cashAccounts = MutableStateFlow<List<CashAccount>>(emptyList())
     val cashAccounts: StateFlow<List<CashAccount>> = _cashAccounts.asStateFlow()
 
-    private val _expenses = MutableStateFlow<List<Expense>>(AlZahraaSeedData.INITIAL_EXPENSES)
+    private val _expenses = MutableStateFlow<List<Expense>>(emptyList())
     val expenses: StateFlow<List<Expense>> = _expenses.asStateFlow()
 
-    private val _oldLedgers = MutableStateFlow<List<OldLedgerEntry>>(AlZahraaSeedData.INITIAL_OLD_LEDGERS)
+    private val _oldLedgers = MutableStateFlow<List<OldLedgerEntry>>(emptyList())
     val oldLedgers: StateFlow<List<OldLedgerEntry>> = _oldLedgers.asStateFlow()
 
-    private val _purchaseInvoices = MutableStateFlow<List<PurchaseInvoice>>(AlZahraaSeedData.INITIAL_PURCHASE_INVOICES)
+    private val _purchaseInvoices = MutableStateFlow<List<PurchaseInvoice>>(emptyList())
     val purchaseInvoices: StateFlow<List<PurchaseInvoice>> = _purchaseInvoices.asStateFlow()
 
-    private val _customerLedgers = MutableStateFlow<Map<String, List<CustomerLedgerEntry>>>(
-        AlZahraaSeedData.INITIAL_CUSTOMERS
-            .filter { it.currentBalance > 0 }
-            .associate { c ->
-                val invNum = "INV-${1000 + (c.code.filter { ch -> ch.isDigit() }.toIntOrNull() ?: 1)}"
-                val entryId = "le_" + UUID.nameUUIDFromBytes((c.id + "_initial").toByteArray()).toString().take(12)
-                c.id to listOf(
-                    CustomerLedgerEntry(
-                        id = entryId,
-                        customerId = c.id,
-                        entryDate = "2026-10-14 10:30",
-                        entryType = "invoice",
-                        documentNumber = invNum,
-                        description = "فاتورة مشتريات مبيدات وأدوية زراعية مسجلة (رصيد سابق)",
-                        debit = c.currentBalance,
-                        credit = 0.0,
-                        runningBalance = c.currentBalance
-                    )
-                )
-            }
-    )
+    private val _customerLedgers = MutableStateFlow<Map<String, List<CustomerLedgerEntry>>>(emptyMap())
     val customerLedgers: StateFlow<Map<String, List<CustomerLedgerEntry>>> = _customerLedgers.asStateFlow()
 
-    private val _cashTransactions = MutableStateFlow<List<CashTransaction>>(
-        listOf(
-            CashTransaction("tx01", "CSH-1001", "الخزينة النقدية الرئيسية - المحل", "2026-10-18 14:30", "expense", 1200.0, "out", 48500.0, "نقل وشحن", "مصروف شحن ونقل بضائع"),
-            CashTransaction("tx02", "CSH-1002", "الخزينة النقدية الرئيسية - المحل", "2026-10-17 10:00", "expense", 650.0, "out", 49700.0, "كهرباء ومياه", "سداد فاتورة استهلاك كهرباء المحل")
-        )
-    )
+    private val _cashTransactions = MutableStateFlow<List<CashTransaction>>(emptyList())
     val cashTransactions: StateFlow<List<CashTransaction>> = _cashTransactions.asStateFlow()
 
     val supabaseStatus: StateFlow<SupabaseStatusInfo>? = configManager?.status
 
     init {
-        if (configManager?.isConfigured() == true) {
+        SupabaseClientProvider.sessionManager = sessionManager
+        if (configManager?.isConfigured() == true && sessionManager?.hasSession() == true) {
             scope.launch {
                 syncFromSupabase()
             }
@@ -113,6 +100,7 @@ class AlZahraaRepository(
     }
 
     private fun getSupabaseApi() = configManager?.let {
+        SupabaseClientProvider.sessionManager = sessionManager
         val url = it.getSupabaseUrl()
         val key = it.getSupabaseAnonKey()
         if (it.isConfigured(url, key)) {
@@ -121,119 +109,178 @@ class AlZahraaRepository(
     }
 
     // --- Core Supabase Sync Operations ---
+
+    /** تسجيل الدخول بنفس إيميل وكلمة مرور الموقع، وبعدها سحب كل البيانات. */
+    suspend fun signIn(email: String, password: String): Result<String> {
+        val cfg = configManager ?: return Result.failure(Exception("الإعدادات غير متاحة"))
+        val session = sessionManager ?: return Result.failure(Exception("الجلسة غير متاحة"))
+        if (!cfg.isConfigured()) {
+            return Result.failure(Exception("لم يتم ضبط رابط Supabase ومفتاح Anon بعد."))
+        }
+        val result = session.signIn(cfg.getSupabaseUrl(), cfg.getSupabaseAnonKey(), email, password)
+        if (result.isFailure) {
+            return Result.failure(result.exceptionOrNull() ?: Exception("فشل تسجيل الدخول"))
+        }
+        return syncFromSupabase()
+    }
+
+    fun signOut() {
+        sessionManager?.signOut()
+        clearLocalData()
+    }
+
+    private fun clearLocalData() {
+        _customers.value = emptyList()
+        _products.value = emptyList()
+        _suppliers.value = emptyList()
+        _cashAccounts.value = emptyList()
+        _expenses.value = emptyList()
+        _oldLedgers.value = emptyList()
+        _purchaseInvoices.value = emptyList()
+        _customerLedgers.value = emptyMap()
+        _cashTransactions.value = emptyList()
+    }
+
+    private suspend fun <T> fetchAllPages(
+        pageSize: Int = 1000,
+        fetch: suspend (limit: Int, offset: Int) -> List<T>
+    ): List<T> {
+        val all = mutableListOf<T>()
+        var offset = 0
+        while (true) {
+            val page = fetch(pageSize, offset)
+            all.addAll(page)
+            if (page.size < pageSize) break
+            offset += pageSize
+        }
+        return all
+    }
+
+    /** بيرجع null ويسجل سبب الفشل بدل ما يوقف المزامنة كلها. الـ 401 بس بيوقفها (الجلسة خلصت). */
+    private suspend fun <T> fetchOrNull(
+        failures: MutableList<String>,
+        label: String,
+        block: suspend () -> T
+    ): T? {
+        return try {
+            block()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: HttpException) {
+            if (e.code() == 401) throw e
+            failures.add("$label (خطأ ${e.code()})")
+            null
+        } catch (e: Exception) {
+            failures.add("$label: ${e.localizedMessage}")
+            null
+        }
+    }
+
     suspend fun syncFromSupabase(): Result<String> = withContext(Dispatchers.IO) {
         val api = getSupabaseApi()
             ?: return@withContext Result.failure(Exception("Supabase غير مهيأ بعد. يرجى إدخال الرابط والمفتاح."))
+        if (sessionManager?.hasSession() != true) {
+            return@withContext Result.failure(Exception("سجّل الدخول الأول عشان تشوف بيانات المؤسسة."))
+        }
 
-        configManager?.updateStatus(SupabaseConnectionState.CONNECTING, "جاري سحب ومزامنة البيانات من Supabase...")
+        configManager?.updateStatus(SupabaseConnectionState.CONNECTING, "جاري سحب البيانات من قاعدة البيانات...")
+        val failures = mutableListOf<String>()
         try {
-            // 1. Fetch Customers
-            val remoteCustomers = api.getCustomers()
-            if (remoteCustomers.isNotEmpty()) {
-                _customers.value = remoteCustomers.map { it.toDomain() }
+            // 1. العملاء
+            val remoteCustomers = fetchOrNull(failures, "العملاء") {
+                fetchAllPages { limit, offset -> api.getCustomers(limit = limit, offset = offset) }
+            }
+            if (remoteCustomers != null) _customers.value = remoteCustomers.map { it.toDomain() }
+
+            // 2. الأصناف مع أرصدة المحل والمخزن
+            val warehouses = fetchOrNull(failures, "المخازن") { api.getWarehouses() }
+            val balances = fetchOrNull(failures, "أرصدة المخزون") {
+                fetchAllPages { limit, offset -> api.getStockBalances(limit = limit, offset = offset) }
+            }
+            val remoteProducts = fetchOrNull(failures, "الأصناف") {
+                fetchAllPages { limit, offset -> api.getProducts(limit = limit, offset = offset) }
+            }
+            if (remoteProducts != null) {
+                val shopIds = warehouses.orEmpty()
+                    .filter { it.locationType == "shop" }
+                    .map { it.id }
+                    .toSet()
+                val balancesByProduct = balances.orEmpty().groupBy { it.productId }
+                _products.value = remoteProducts.map { dto ->
+                    val rows = balancesByProduct[dto.id].orEmpty()
+                    val shop = rows.filter { it.warehouseId in shopIds }.sumOf { it.qty ?: 0.0 }.toInt()
+                    val warehouse = rows.filter { it.warehouseId !in shopIds }.sumOf { it.qty ?: 0.0 }.toInt()
+                    dto.toDomain().copy(stockShop = shop, stockWarehouse = warehouse, totalStock = shop + warehouse)
+                }
             }
 
-            // 2. Fetch Products
-            val remoteProducts = runCatching { api.getProducts() }.getOrNull()
-            if (!remoteProducts.isNullOrEmpty()) {
-                _products.value = remoteProducts.map { it.toDomain() }
+            // 3. كشوف حساب العملاء
+            val remoteLedger = fetchOrNull(failures, "كشوف الحساب") {
+                fetchAllPages { limit, offset -> api.getCustomerLedgerEntries(limit = limit, offset = offset) }
+            }
+            if (remoteLedger != null) {
+                _customerLedgers.value = remoteLedger.groupBy({ it.customerId }, { it.toDomain() })
             }
 
-            // 3. Fetch Ledger Entries
-            val remoteLedger = runCatching { api.getCustomerLedgerEntries() }.getOrNull()
-            if (!remoteLedger.isNullOrEmpty()) {
-                val grouped = remoteLedger.groupBy({ it.customerId }, { it.toDomain() })
-                _customerLedgers.value = grouped
-            }
+            // 4. الموردين
+            fetchOrNull(failures, "الموردين") { api.getSuppliers() }
+                ?.let { list -> _suppliers.value = list.map { it.toDomain() } }
 
-            // 4. Fetch Expenses
-            val remoteExpenses = runCatching { api.getExpenses() }.getOrNull()
-            if (!remoteExpenses.isNullOrEmpty()) {
-                _expenses.value = remoteExpenses.map { it.toDomain() }
-            }
+            // 5. الخزائن وحركاتها والمصروفات
+            fetchOrNull(failures, "الخزائن") { api.getCashAccounts() }
+                ?.let { list -> _cashAccounts.value = list.map { it.toDomain() } }
+            fetchOrNull(failures, "حركات الخزينة") { api.getCashTransactions(limit = 500) }
+                ?.let { list -> _cashTransactions.value = list.map { it.toDomain() } }
+            fetchOrNull(failures, "المصروفات") { api.getExpenses(limit = 500) }
+                ?.let { list -> _expenses.value = list.map { it.toDomain() } }
 
-            // 5. Fetch Old Ledgers
-            val remoteOld = runCatching { api.getOldLedgers() }.getOrNull()
-            if (!remoteOld.isNullOrEmpty()) {
-                _oldLedgers.value = remoteOld.map { it.toDomain() }
-            }
+            // 6. الدفاتر القديمة
+            fetchOrNull(failures, "الدفاتر القديمة") { api.getOldLedgers() }
+                ?.let { list -> _oldLedgers.value = list.map { it.toDomain() } }
+
+            // 7. فواتير الشراء
+            fetchOrNull(failures, "فواتير الشراء") { api.getPurchaseInvoicesWithItems() }
+                ?.let { list -> _purchaseInvoices.value = list.map { it.toDomain() } }
 
             val nowStr = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
+            val summary = "تم جلب ${_customers.value.size} عميل و ${_products.value.size} صنف."
+            val message = if (failures.isEmpty()) {
+                "تمت المزامنة بنجاح مع قاعدة البيانات"
+            } else {
+                "تمت المزامنة مع تعذر جلب: " + failures.joinToString("، ")
+            }
             configManager?.updateStatus(
                 state = SupabaseConnectionState.CONNECTED,
-                message = "تمت المزامنة بنجاح مع Supabase",
+                message = message,
                 customersCount = _customers.value.size,
                 productsCount = _products.value.size,
                 syncTime = nowStr
             )
-            Result.success("تم جلب البيانات بنجاح: ${_customers.value.size} عميل و ${_products.value.size} صنف.")
+            Result.success(if (failures.isEmpty()) summary else "$summary ($message)")
+        } catch (e: HttpException) {
+            if (e.code() == 401) {
+                // التوكن مرفوض: نطلع المستخدم لشاشة الدخول
+                signOut()
+                configManager?.updateStatus(SupabaseConnectionState.CONNECTED, "انتهت الجلسة، سجّل الدخول من جديد")
+                Result.failure(Exception("انتهت الجلسة، سجّل الدخول من جديد"))
+            } else {
+                Log.e("AlZahraaRepository", "Supabase sync error", e)
+                configManager?.updateStatus(SupabaseConnectionState.ERROR, "فشل الاتصال بقاعدة البيانات (خطأ ${e.code()})")
+                Result.failure(e)
+            }
         } catch (e: Exception) {
             Log.e("AlZahraaRepository", "Supabase sync error", e)
             configManager?.updateStatus(
                 state = SupabaseConnectionState.ERROR,
-                message = "فشل الاتصال بـ Supabase: ${e.localizedMessage}"
+                message = "فشل الاتصال بقاعدة البيانات: ${e.localizedMessage}"
             )
             Result.failure(e)
         }
     }
 
+    /** اتوقف عن قصد: التطبيق بقى بيشتغل على قاعدة البيانات الحقيقية ومينفعش نرفعلها بيانات تجريبية. */
     suspend fun pushSeedDataToSupabase(): Result<String> = withContext(Dispatchers.IO) {
-        val api = getSupabaseApi()
-            ?: return@withContext Result.failure(Exception("Supabase غير مهيأ بعد."))
-
-        configManager?.updateStatus(SupabaseConnectionState.CONNECTING, "جاري رفع البيانات الأولية إلى Supabase...")
-        try {
-            // 1. Push Customers
-            val custDtos = _customers.value.map { c ->
-                SupabaseCustomerDto.fromDomain(c.copy(id = ensureUuid(c.id)))
-            }
-            api.upsertCustomerBatch(custDtos)
-
-            // 2. Push Products
-            val prodDtos = _products.value.map { p ->
-                SupabaseProductDto.fromDomain(p.copy(id = ensureUuid(p.id)))
-            }
-            api.upsertProductBatch(prodDtos)
-
-            // 3. Push Old Ledgers
-            val oldDtos = _oldLedgers.value.map { o ->
-                SupabaseOldLedgerDto.fromDomain(o.copy(id = ensureUuid(o.id)))
-            }
-            runCatching { api.upsertOldLedgersBatch(oldDtos) }
-
-            // 4. Push Cash Accounts
-            val cashDtos = _cashAccounts.value.map { a: CashAccount ->
-                SupabaseCashAccountDto.fromDomain(a.copy(id = ensureUuid(a.id)))
-            }
-            runCatching { api.upsertCashAccountsBatch(cashDtos) }
-
-            // 5. Push Debt Ledgers
-            val ledgerDtos = _customerLedgers.value.values.flatten().map { l ->
-                SupabaseCustomerLedgerEntryDto.fromDomain(
-                    l.copy(
-                        id = ensureUuid(l.id),
-                        customerId = ensureUuid(l.customerId)
-                    )
-                )
-            }
-            if (ledgerDtos.isNotEmpty()) {
-                runCatching { api.insertLedgerEntriesBatch(ledgerDtos) }
-            }
-
-            val nowStr = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
-            configManager?.updateStatus(
-                state = SupabaseConnectionState.CONNECTED,
-                message = "تم رفع وتحديث كافة البيانات في Supabase بنجاح",
-                customersCount = custDtos.size,
-                productsCount = prodDtos.size,
-                syncTime = nowStr
-            )
-            Result.success("تم رفع ${custDtos.size} عميل و ${prodDtos.size} صنف إلى Supabase بنجاح!")
-        } catch (e: Exception) {
-            Log.e("AlZahraaRepository", "Push seed error", e)
-            configManager?.updateStatus(SupabaseConnectionState.ERROR, "فشل الرفع: ${e.localizedMessage}")
-            Result.failure(e)
-        }
+        Result.failure(Exception("رفع البيانات التجريبية اتوقف: التطبيق بيقرأ من قاعدة بيانات المؤسسة الحقيقية."))
     }
 
     suspend fun testSupabaseConnection(url: String, key: String): Result<String> = withContext(Dispatchers.IO) {

@@ -352,12 +352,11 @@ fun SupabaseConfigDialog(
                                 Text("سحب من السحابة", fontSize = 12.sp, fontWeight = FontWeight.Bold)
                             }
 
-                            // Push seed button
+                            // Sign out button
                             OutlinedButton(
                                 onClick = {
-                                    viewModel.pushInitialSeedToSupabase { success, msg ->
-                                        Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
-                                    }
+                                    viewModel.signOut()
+                                    Toast.makeText(context, "تم تسجيل الخروج", Toast.LENGTH_SHORT).show()
                                 },
                                 modifier = Modifier
                                     .weight(1f)
@@ -367,9 +366,9 @@ fun SupabaseConfigDialog(
                                 border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFD97706)),
                                 shape = RoundedCornerShape(10.dp)
                             ) {
-                                Icon(Icons.Default.CloudUpload, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Icon(Icons.Default.CloudOff, contentDescription = null, modifier = Modifier.size(16.dp))
                                 Spacer(modifier = Modifier.width(6.dp))
-                                Text("رفع البيانات الشاملة", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                Text("تسجيل الخروج", fontSize = 12.sp, fontWeight = FontWeight.Bold)
                             }
                         }
                     }

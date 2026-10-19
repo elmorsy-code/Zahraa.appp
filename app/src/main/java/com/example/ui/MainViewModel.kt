@@ -57,6 +57,10 @@ class MainViewModel(
     val showSupabaseConfigDialog = MutableStateFlow(false)
     val isSupabaseSyncing = MutableStateFlow(false)
 
+    // تسجيل الدخول (نفس إيميل وكلمة مرور الموقع)
+    val isSignedIn: StateFlow<Boolean> = repository.isSignedIn
+    val isAuthLoading = MutableStateFlow(false)
+
     // Data streams from repository
     val customers: StateFlow<List<Customer>> = repository.customers
     val products: StateFlow<List<Product>> = repository.products
@@ -332,6 +336,22 @@ class MainViewModel(
         showSupabaseConfigDialog.value = false
     }
 
+    fun isSupabaseConfigured(): Boolean = configManager.isConfigured()
+
+    fun signIn(email: String, password: String, onResult: (Boolean, String) -> Unit) {
+        viewModelScope.launch {
+            isAuthLoading.value = true
+            val result = repository.signIn(email, password)
+            isAuthLoading.value = false
+            result.onSuccess { msg -> onResult(true, msg) }
+                .onFailure { err -> onResult(false, err.localizedMessage ?: "فشل تسجيل الدخول") }
+        }
+    }
+
+    fun signOut() {
+        repository.signOut()
+    }
+
     fun syncSupabase(onResult: (Boolean, String) -> Unit) {
         viewModelScope.launch {
             isSupabaseSyncing.value = true
@@ -374,6 +394,7 @@ class MainViewModel(
     }
 
     fun disconnectSupabase() {
+        repository.signOut()
         configManager.clearConfig()
     }
 }

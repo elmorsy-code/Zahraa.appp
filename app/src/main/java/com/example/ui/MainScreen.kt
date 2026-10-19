@@ -66,15 +66,37 @@ import com.example.ui.screens.CustomerPaymentDialog
 import com.example.ui.screens.CustomersScreen
 import com.example.ui.screens.DashboardScreen
 import com.example.ui.screens.InvoicesScreen
+import com.example.ui.screens.LoginScreen
 import com.example.ui.screens.OldLedgersScreen
 import com.example.ui.screens.ProductsScreen
 import com.example.ui.screens.SimsimScreen
 import com.example.ui.screens.TreasuryScreen
 import java.util.Locale
 
-@OptIn(ExperimentalMaterial3Api::class)
+/**
+ * لو الاتصال بـ Supabase مضبوط والمستخدم مش مسجل دخول، بنعرض شاشة الدخول.
+ * من غير تسجيل دخول القاعدة بترجع بيانات فاضية (حماية RLS).
+ */
 @Composable
 fun MainScreen(
+    viewModel: MainViewModel,
+    modifier: Modifier = Modifier
+) {
+    val signedIn by viewModel.isSignedIn.collectAsState()
+    val status by viewModel.supabaseStatus.collectAsState() // بيعيد الحساب لما الإعدادات تتغير
+    val needsLogin = viewModel.isSupabaseConfigured() && !signedIn &&
+        status.state != com.example.network.supabase.SupabaseConnectionState.DISCONNECTED
+
+    if (needsLogin) {
+        LoginScreen(viewModel = viewModel, modifier = modifier)
+    } else {
+        MainContent(viewModel = viewModel, modifier = modifier)
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun MainContent(
     viewModel: MainViewModel,
     modifier: Modifier = Modifier
 ) {
